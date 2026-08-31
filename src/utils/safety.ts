@@ -63,7 +63,22 @@ function parseAllowedTools(): Set<string> {
 }
 
 export function isToolAllowed(toolName: string): { allowed: boolean; reason?: string } {
-  return { allowed: true };
+  // 如果不在危险工具列表中，直接允许
+  if (!DEFAULT_DANGEROUS_TOOLS.has(toolName)) {
+    return { allowed: true };
+  }
+
+  // 检查是否通过环境变量明确允许
+  const allowedTools = parseAllowedTools();
+  if (allowedTools.has(toolName)) {
+    return { allowed: true };
+  }
+
+  // 危险工具未在允许列表中
+  return {
+    allowed: false,
+    reason: `工具 ${toolName} 被标记为危险工具。如需启用，请设置 ${DANGEROUS_TOOL_ALLOW_ENV}=${toolName} 或 ${DANGEROUS_TOOL_ALLOW_ENV}=${Array.from(DEFAULT_DANGEROUS_TOOLS).join(',')}`
+  };
 }
 
 export function isBashCommandAllowed(
@@ -72,6 +87,12 @@ export function isBashCommandAllowed(
 ): { allowed: boolean; reason?: string } {
   const env = options.env ?? process.env;
   if (env[BASH_ALLOW_DANGEROUS_ENV] === 'true') {
+    // 记录警告日志，提醒用户已禁用 shell 安全检查
+    console.warn(
+      `[WARNING] Shell safety checks have been bypassed via ${BASH_ALLOW_DANGEROUS_ENV}=true. ` +
+      `This disables protection against dangerous commands like 'rm -rf /'. ` +
+      `Use this only in trusted environments.`
+    );
     return { allowed: true };
   }
 
@@ -111,7 +132,19 @@ function isOutsideWorkingDirectory(targetPath: string, workingDirectory: string)
 }
 
 export function isReadPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
-  return { allowed: true };
+  if (!isOutsideWorkingDirectory(targetPath, workingDirectory)) {
+    return { allowed: true };
+  }
+
+  // 路径在工作目录外，检查是否允许
+  if (process.env[FS_ALLOW_OUTSIDE_READ_ENV] === 'true') {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `路径 ${targetPath} 位于工作目录 ${workingDirectory} 之外。如需读取外部路径，请设置 ${FS_ALLOW_OUTSIDE_READ_ENV}=true`
+  };
 }
 
 export function isPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
