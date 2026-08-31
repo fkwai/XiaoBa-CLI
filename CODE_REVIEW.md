@@ -182,3 +182,147 @@ The tool arguments are parsed as JSON. If the AI model produces malformed JSON, 
 | Documentation | ⭐⭐⭐⭐ | Good inline docs, Chinese may limit reach |
 
 **Overall**: This is a sophisticated and well-engineered AI agent runtime. The main concerns are around the unimplemented safety functions and the bypass mechanism via environment variables. The codebase demonstrates good security awareness in most areas (path handling, skill verification, device grants) but has some gaps that should be addressed before production deployment.
+
+---
+
+## Additional Code Review: Extended Analysis
+
+*Review Date: Analysis based on current codebase state*
+
+### 🔍 Critical Issues Found
+
+#### 1. **Safety Module is Non-Functional**
+**File**: `src/utils/safety.ts`
+
+Both `isToolAllowed()` and `isReadPathAllowed()` return `{ allowed: true }` unconditionally:
+```typescript
+export function isToolAllowed(toolName: string): { allowed: boolean; reason?: string } {
+  return { allowed: true };  // ← Always allows
+}
+
+export function isReadPathAllowed(...): { allowed: boolean } {
+  return { allowed: true };  // ← Always allows
+}
+```
+
+**Impact**: The entire permission profile system is ineffective. Any code relying on these functions has no actual protection.
+
+**Recommendation**: Either implement proper allowlisting logic or remove these functions entirely to avoid false confidence.
+
+#### 2. **Dangerous Command Bypass Has No Warning**
+**File**: `src/utils/safety.ts` (line 76)
+```typescript
+if (env[BASH_ALLOW_DANGEROUS_ENV] === 'true') {
+  return { allowed: true };  // ← No logging
+}
+```
+
+**Impact**: When safety is bypassed, there's no audit trail or warning. This makes debugging security incidents difficult.
+
+#### 3. **Silent Configuration Failures**
+**File**: `src/utils/config.ts`
+```typescript
+} catch {
+  return {};  // ← Silently ignores all errors
+}
+```
+
+**Impact**: A malformed `config.json` will load an empty config with no indication of the failure. This causes:
+- Missing API keys not detected until runtime
+- Misconfigured models silently fall back to defaults
+- Unexpected behavior with no error message
+
+#### 4. **Hardcoded Model Fallbacks**
+**File**: `src/providers/anthropic-provider.ts`
+```typescript
+this.model = config.model || 'claude-sonnet-4-20250514';
+```
+
+**Impact**: If configuration is corrupted or missing the model field, the system silently switches to a specific model version. This can cause:
+- Unexpected costs (larger models)
+- Different behavior than intended
+- Harder debugging of configuration issues
+
+---
+
+### ⚠️ Moderate Concerns
+
+#### 5. **Large File Complexity**
+| File | Lines/Size | Concern |
+|------|------------|---------|
+| `conversation-runner.ts` | ~1,900 lines | Hard to test exhaustively |
+| `agent-session.ts` | ~1,400 lines | Multiple responsibilities |
+| `bash-tool.ts` | ~32KB | Tool execution, validation, history |
+| `sub-agent-manager.ts` | ~800+ lines | Lifecycle, messaging, state |
+
+**Recommendation**: Extract sub-modules for better maintainability:
+- Conversation context management
+- Tool registry
+- State machine handlers
+
+#### 6. **Inconsistent Error Handling Patterns**
+```typescript
+// Pattern A: Throw errors
+throw new ToolExecutionError(...);
+
+// Pattern B: Return result objects
+return { ok: false, error: '...' };
+
+// Pattern C: Mixed
+if (!result.ok) throw new Error(result.error);
+```
+
+**Impact**: Makes error handling code harder to follow and creates risk of unhandled errors.
+
+#### 7. **No Input Validation on Tool Arguments**
+```typescript
+async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult>
+```
+
+**Impact**: `args: any` bypasses TypeScript safety. Malformed tool calls cause runtime errors with unclear messages.
+
+#### 8. **External Submodule Without Version Pinning**
+```gitmodules
+[submodule "cats-company"]
+    path = vendor/cats-company
+    url = https://github.com/buildsense-ai/cats-company.git
+```
+
+**Risk**: No commit hash pinned. `git submodule update` could pull any version.
+
+---
+
+### 📊 Detailed Security Assessment
+
+| Security Feature | Status | Notes |
+|-----------------|--------|-------|
+| Dangerous command detection | ⚠️ Partial | Detects patterns but can be bypassed |
+| Tool permission system | ❌ Not implemented | `isToolAllowed()` always returns true |
+| Path restrictions | ❌ Not implemented | `isReadPathAllowed()` always returns true |
+| Device grant authorization | ✅ Implemented | Good RPC permission model |
+| Skill content hash verification | ✅ Implemented | Strong integrity checks |
+| Path traversal protection | ⚠️ Implicit | Relies on working directory bounds |
+| Audit logging | ⚠️ Partial | Session logs exist but no security audit trail |
+| Rate limiting | ❌ Not implemented | No protection against abuse |
+
+---
+
+### 🔧 Recommended Fixes (Priority Order)
+
+1. **HIGH**: Implement or remove `isToolAllowed()` and `isReadPathAllowed()`
+2. **HIGH**: Add logging when `BASH_ALLOW_DANGEROUS` is active
+3. **MEDIUM**: Log warnings for config parse failures
+4. **MEDIUM**: Fail fast instead of hardcoded fallbacks for required config
+5. **LOW**: Add rate limiting to tool executions
+6. **LOW**: Pin submodule to specific commit
+
+---
+
+### 📈 Code Metrics
+
+- **Total Modules**: 24 TypeScript modules
+- **Test Coverage**: 200+ test files, good coverage of core functionality
+- **Type Safety**: ~85% typed, some `any` casts in tool execution
+- **Documentation**: Comprehensive Chinese comments, inline API docs
+
+**Overall Assessment**: The codebase has a strong architectural foundation with good separation of concerns and comprehensive testing. The main issues are unimplemented safety features and silent configuration failures that should be addressed before production deployment.
