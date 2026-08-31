@@ -6,6 +6,8 @@ import * as path from 'node:path';
 import {
   isBashCommandAllowed,
   isPathAllowed,
+  isToolAllowed,
+  isReadPathAllowed,
 } from '../src/utils/safety';
 import { ShellTool } from '../src/tools/bash-tool';
 import { WriteTool } from '../src/tools/write-tool';
@@ -79,5 +81,89 @@ test('write safety blocks direct .env mutation unless explicitly allowed by envi
     if (previous === undefined) delete process.env.GAUZ_FS_ALLOW_DOTENV;
     else process.env.GAUZ_FS_ALLOW_DOTENV = previous;
     fs.rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test('isToolAllowed blocks dangerous tools by default', () => {
+  // 危险工具默认被阻止
+  assert.equal(isToolAllowed('execute_shell').allowed, false);
+  assert.equal(isToolAllowed('execute_bash').allowed, false);
+  assert.equal(isToolAllowed('write_file').allowed, false);
+  assert.equal(isToolAllowed('edit_file').allowed, false);
+  assert.equal(isToolAllowed('self_evolution').allowed, false);
+
+  // 非危险工具默认允许
+  assert.equal(isToolAllowed('read_file').allowed, true);
+  assert.equal(isToolAllowed('glob').allowed, true);
+  assert.equal(isToolAllowed('grep').allowed, true);
+});
+
+test('isToolAllowed allows dangerous tools when GAUZ_TOOL_ALLOW is set', () => {
+  const previous = process.env.GAUZ_TOOL_ALLOW;
+
+  try {
+    process.env.GAUZ_TOOL_ALLOW = 'execute_shell,write_file';
+    assert.equal(isToolAllowed('execute_shell').allowed, true);
+    assert.equal(isToolAllowed('write_file').allowed, true);
+    assert.equal(isToolAllowed('edit_file').allowed, false); // not in allow list
+
+    process.env.GAUZ_TOOL_ALLOW = 'execute_shell,execute_bash,write_file,edit_file,self_evolution';
+    assert.equal(isToolAllowed('execute_shell').allowed, true);
+    assert.equal(isToolAllowed('execute_bash').allowed, true);
+    assert.equal(isToolAllowed('write_file').allowed, true);
+    assert.equal(isToolAllowed('edit_file').allowed, true);
+    assert.equal(isToolAllowed('self_evolution').allowed, true);
+  } finally {
+    if (previous === undefined) delete process.env.GAUZ_TOOL_ALLOW;
+    else process.env.GAUZ_TOOL_ALLOW = previous;
+  }
+});
+
+test('isReadPathAllowed blocks paths outside working directory by default', () => {
+  const cwd = '/project/src';
+  // 同目录内的文件允许
+  assert.equal(isReadPathAllowed('/project/src/file.txt', cwd).allowed, true);
+  assert.equal(isReadPathAllowed('/project/src/sub/file.txt', cwd).allowed, true);
+
+  // 外部路径默认阻止
+  assert.equal(isReadPathAllowed('/etc/passwd', cwd).allowed, false);
+  assert.equal(isReadPathAllowed('/home/user/file.txt', cwd).allowed, false);
+  assert.equal(isReadPathAllowed('/tmp/file.txt', cwd).allowed, false);
+});
+
+test('isReadPathAllowed allows outside paths when GAUZ_FS_ALLOW_OUTSIDE_READ is set', () => {
+  const previous = process.env.GAUZ_FS_ALLOW_OUTSIDE_READ;
+
+  try {
+    process.env.GAUZ_FS_ALLOW_OUTSIDE_READ = 'true';
+
+    const cwd = '/project/src';
+    assert.equal(isReadPathAllowed('/etc/passwd', cwd).allowed, true);
+    assert.equal(isReadPathAllowed('/home/user/file.txt', cwd).allowed, true);
+  } finally {
+    if (previous === undefined) delete process.env.GAUZ_FS_ALLOW_OUTSIDE_READ;
+    else process.env.GAUZ_FS_ALLOW_OUTSIDE_READ = previous;
+  }
+});
+
+test('isBashCommandAllowed logs warning when bypass is activated', () => {
+  // 捕获 console.warn 输出
+  const warnCalls: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (msg: string) => warnCalls.push(msg);
+
+  try {
+    const result = isBashCommandAllowed('ls -la', {
+      env: { GAUZ_BASH_ALLOW_DANGEROUS: 'true' }
+    });
+
+    assert.equal(result.allowed, true);
+    assert.ok(warnCalls.length > 0, 'Should have logged a warning');
+    assert.ok(warnCalls[0].includes('Shell safety checks have been bypassed'),
+              'Warning should mention bypass');
+    assert.ok(warnCalls[0].includes('GAUZ_BASH_ALLOW_DANGEROUS'),
+              'Warning should mention the env var');
+  } finally {
+    console.warn = originalWarn;
   }
 });

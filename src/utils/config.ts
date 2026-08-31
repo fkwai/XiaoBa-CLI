@@ -58,7 +58,12 @@ export class ConfigManager {
     try {
       const content = fs.readFileSync(configFile, 'utf-8');
       return JSON.parse(content);
-    } catch {
+    } catch (error) {
+      // 记录警告日志，提醒用户配置文件可能损坏
+      console.warn(
+        `[WARNING] Failed to parse config file at ${configFile}: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Using default configuration.`
+      );
       return {};
     }
   }
